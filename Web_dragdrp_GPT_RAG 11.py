@@ -37,7 +37,7 @@ def retrieve_similar_questions(query, top_k=3):
     return df.iloc[top_indices]
 
 # Streamlit UI
-st.title("国家試験問題 AI解析・出題アプリ")
+st.title("歯科医師国家試験問題 AI解析・RAG解析・類題アプリ")
 
 uploaded_file = st.file_uploader("国家試験問題の画像をアップロード", type=["png", "jpg", "jpeg"])
 

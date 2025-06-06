@@ -1,89 +1,114 @@
 import streamlit as st
 import pandas as pd
 from PIL import Image
+from io import BytesIO
 from openai import OpenAI
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from io import BytesIO
+import base64
 
-# GPT-4o モデル使用
-MODEL = "gpt-4o-2024-11-20"
-
-# OpenAI API キーの確認
+# OpenAI API Key
 if "OPENAI_API_KEY" not in st.secrets:
     st.error("OPENAI_API_KEY が設定されていません。")
     st.stop()
 
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.title("歯科医師国家試験 問題解析＆類題生成")
+# タイトル
+st.title("国家試験問題画像から解析＋類似問題提案")
 
-# sample.csvの読み込み（事前に用意されたRAGデータ）
-df = pd.read_csv("sample.csv")
-questions_list = df["question"].astype(str).tolist()
+# CSVの読み込み
+try:
+    df = pd.read_csv("sample.csv")
+    if "問題文" not in df.columns or "a" not in df.columns or "解答" not in df.columns:
+        st.error("CSVに必要な列（問題文, a, 解答）が含まれていません。")
+        st.stop()
+except Exception as e:
+    st.error(f"CSVファイルの読み込み中にエラーが発生しました: {e}")
+    st.stop()
 
-uploaded_file = st.file_uploader("試験問題画像をアップロードしてください", type=["png", "jpg", "jpeg"])
+# ベクトル化準備（問題文）
+vectorizer = TfidfVectorizer()
+question_vectors = vectorizer.fit_transform(df["問題文"].astype(str).tolist())
 
-if uploaded_file:
+# 画像アップロード
+uploaded_file = st.file_uploader("国家試験問題の画像をアップロードしてください（スクリーンショット等）", type=["png", "jpg", "jpeg"])
+
+if uploaded_file is not None:
+    # 画像表示
     image = Image.open(uploaded_file)
-    st.image(image, caption="アップロードされた問題画像", use_column_width=True)
+    st.image(image, caption="アップロードされた画像", use_column_width=True)
 
-    # Step 1: Vision GPTで画像から問題文と選択肢を抽出
-    with st.spinner("画像から問題文と選択肢を抽出中..."):
-        response = client.chat.completions.create(
-            model=MODEL,
+    # 画像バイト変換
+    buffered = BytesIO()
+    image.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+    with st.spinner("GPTに画像を送信して問題文を解析中..."):
+        vision_response = client.chat.completions.create(
+            model="gpt-4o-2024-11-20",
             messages=[
-                {"role": "system", "content": "あなたは試験問題のOCRと構造化を行うAIです。"},
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": "以下は歯科医師国家試験の問題画像です。問題文と選択肢をテキストで抽出し、以下のフォーマットで出力してください。\n\n【問題文】\n...\n【選択肢】\na. ...\nb. ...\nc. ...\nd. ...\ne. ..."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": "data:image/png;base64," + base64.b64encode(uploaded_file.read()).decode()
-                            },
-                        },
+                        {"type": "text", "text": "以下の画像には国家試験の問題が写っています。問題文、選択肢、正解を抽出してください。"},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}},
                     ],
-                },
+                }
             ],
-            temperature=0.2,
+            temperature=0.2
         )
-        question_text = response.choices[0].message.content
-        st.markdown("### 🔍 抽出された問題文と選択肢")
-        st.markdown(question_text)
+        extracted = vision_response.choices[0].message.content
 
-    # Step 2: コサイン類似度によるRAG検索
+    st.markdown("### 🔍 解析された問題文と選択肢")
+    st.markdown(extracted)
+
+    # 類似検索（問題文のみ使用）
     with st.spinner("類似問題を検索中..."):
-        vectorizer = TfidfVectorizer()
-        vectors = vectorizer.fit_transform([question_text] + questions_list)
-        cos_sim = cosine_similarity(vectors[0:1], vectors[1:]).flatten()
-        top_k = cos_sim.argsort()[-3:][::-1]
-        similar_entries = df.iloc[top_k][["question", "answer", "explanation"]].to_dict(orient="records")
-
-    # Step 3: GPTに解答・解説・類題作成を依頼
-    with st.spinner("GPTによる解析と出力を生成中..."):
-        prompt = f"""
-以下は国家試験問題です。まず正解を選び、選択肢ごとに理由を述べてください。
-その後、類似問題を3問作成し、それぞれ正解と解説を加えてください。
-
-【問題】
-{question_text}
-
-【参考データ（過去問RAGより）】
-{similar_entries}
-"""
-
-        completion = client.chat.completions.create(
-            model=MODEL,
+        sim_response = client.chat.completions.create(
+            model="gpt-4o-2024-11-20",
             messages=[
-                {"role": "system", "content": "あなたは優秀な歯科医師国家試験の解説者です。"},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": f"次のテキストから問題文部分だけを取り出してください（日本語）：\n\n{extracted}"}
             ],
-            temperature=0.7,
+            temperature=0.2
         )
-        st.markdown("### ✅ GPTによる解答と解説")
-        st.markdown(completion.choices[0].message.content)
+        extracted_question = sim_response.choices[0].message.content.strip()
+
+        input_vector = vectorizer.transform([extracted_question])
+        similarities = cosine_similarity(input_vector, question_vectors)[0]
+        top_indices = similarities.argsort()[::-1][:3]
+        similar_rows = df.iloc[top_indices]
+
+    st.markdown("### 🧠 RAGによる類似問題（上位3件）")
+    for i, row in similar_rows.iterrows():
+        st.markdown(f"**問題：** {row['問題文']}")
+        st.markdown(f"a. {row['a']}  b. {row['b']}  c. {row['c']}  d. {row['d']}  e. {row['e']}")
+        st.markdown(f"**正解：** {row['解答']}")
+        st.markdown("---")
+
+    # 類似問題＋解析結果を再送信し、解説と新規類似問題生成を依頼
+    with st.spinner("最終出力を生成中（解説＋新規類似問題の作成）..."):
+        final_prompt = f"""
+以下は画像から抽出した問題です：
+{extracted}
+
+さらに、過去問から抽出された類似問題は以下の通りです：
+{similar_rows.to_string(index=False)}
+
+この情報を参考に、
+1. 画像の問題の正解と選択肢ごとの説明
+2. 新たな類似問題を3題、それぞれ選択肢付き＋解説つき
+
+を日本語で生成してください。
+        """
+
+        final_response = client.chat.completions.create(
+            model="gpt-4o-2024-11-20",
+            messages=[{"role": "user", "content": final_prompt}],
+            temperature=0.3
+        )
+
+        final_output = final_response.choices[0].message.content
+
+    st.markdown("### ✅ 正解と詳細な解説")
+    st.markdown(final_output)

@@ -1,0 +1,6 @@
+streamlit
+pillow
+pandas
+openai
+scikit-learn
+python-dotenv

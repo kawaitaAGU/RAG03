@@ -54,7 +54,7 @@ if uploaded_file:
         response = client.chat.completions.create(
             model="gpt-4o-2024-11-20",
             messages=[
-                {"role": "system", "content": "あなたは国家試験画像から問題を抽出するOCRの専門家です。問題文と選択肢を丁寧に抽出してください。"},
+                {"role": "system", "content": "あなたは国家試験画像から問題を抽出するOCRの専門家です。問題文と選択肢を丁寧に抽出してください。選択肢の数は5種類です。まれに5種類以上はありますが、５種類より少ないことはありえません。"},
                 {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}]}
             ],
             max_tokens=1000
